@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "PANÍ",
+      "hasCanvas": false,
+      "bodyTextLen": 775,
+      "bodyTextHash": "4b149b7b4059f0f3b2dfd7f8615a9457d2767c983036e50ee95004b6ed06643f",
+      "bodyTextPrefix": "SOUKROMÁ SESSION PANÍ Třicet pět minut. Žádné přeskakování. Žádn",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "PANÍ",
+      "hasCanvas": false,
+      "bodyTextLen": 775,
+      "bodyTextHash": "4b149b7b4059f0f3b2dfd7f8615a9457d2767c983036e50ee95004b6ed06643f",
+      "bodyTextPrefix": "SOUKROMÁ SESSION PANÍ Třicet pět minut. Žádné přeskakování. Žádn",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}

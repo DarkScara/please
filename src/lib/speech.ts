@@ -4,11 +4,11 @@ export function speak(text: string) {
   synth.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.lang = "en-US";
-  utter.rate = 0.88;
-  utter.pitch = 0.98;
+  utter.rate = 0.82;
+  utter.pitch = 0.92;
   const voices = synth.getVoices();
   const pick =
-    voices.find((v) => /en(-|_)US/i.test(v.lang) && /female|woman|samantha|victoria|zira|google us/i.test(v.name)) ??
+    voices.find((v) => /en(-|_)US/i.test(v.lang) && /female|woman|samantha|victoria|zira|google us english|eva|susan|karen/i.test(v.name)) ??
     voices.find((v) => v.lang.toLowerCase().startsWith("en") && /female|woman/i.test(v.name)) ??
     voices.find((v) => v.lang.toLowerCase().startsWith("en"));
   if (pick) utter.voice = pick;

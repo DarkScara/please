@@ -25,11 +25,16 @@ import {
   type DayProgram,
   type Phase,
 } from "@/data/program";
-import { silence, speak } from "@/lib/speech";
+import { AssignmentProof, BedtimeScreen, HouseHub } from "@/components/house-screens";
+import {
+  composeSleep,
+  fogBeats,
+  nextAssignment,
+  shouldFog,
+} from "@/data/house";
+import { canListen, listenOnce, mantraHeard } from "@/lib/listen";
 import { TimerRing } from "@/components/timer-ring";
 import {
-  PROGRAM_KEY,
-  PROGRAM_KEY,
   SESSION_KEY,
   applyMissedDays,
   availability,
@@ -56,7 +61,10 @@ type Mode =
   | "punish"
   | "verdict"
   | "end"
-  | "abort";
+  | "abort"
+  | "assignment"
+  | "bedtime"
+  | "fog";
 
 type SessionSave = {
   day: number;
@@ -117,6 +125,7 @@ export function JoiApp() {
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [ageOk, setAgeOk] = useState(false);
   const [privateOk, setPrivateOk] = useState(false);
+  const [thcOwn, setThcOwn] = useState(false);
   const [voiceOn, setVoiceOn] = useState(true);
   const [name, setName] = useState("");
   const [dayNum, setDayNum] = useState(1);

@@ -47,6 +47,13 @@ export type DayLog = {
   line: string;
 };
 
+export type SavedAssignment = {
+  id: string;
+  kind: "photo" | "audio" | "honor";
+  want: string;
+  text: string;
+};
+
 export type ProgramSave = {
   name: string;
   startedOn: string;
@@ -57,17 +64,43 @@ export type ProgramSave = {
   totalStrikes: number;
   lastVerdict: Verdict | null;
   voiceOn: boolean;
+  thcOwn: boolean;
   history: DayLog[];
+  usedAssignments: string[];
+  assignment: SavedAssignment | null;
+  assignmentResult: "pending" | "pass" | "fail" | null;
+  bedtimeDoneOn: string | null;
 };
 
 export const PROGRAM_KEY = "mommy-program-v1";
 export const SESSION_KEY = "mommy-session-v1";
 
+function defaults(partial: Partial<ProgramSave> & Pick<ProgramSave, "name" | "startedOn">): ProgramSave {
+  return {
+    lastCompletedOn: null,
+    daysCompleted: 0,
+    streak: 0,
+    missed: 0,
+    totalStrikes: 0,
+    lastVerdict: null,
+    voiceOn: true,
+    thcOwn: false,
+    history: [],
+    usedAssignments: [],
+    assignment: null,
+    assignmentResult: null,
+    bedtimeDoneOn: null,
+    ...partial,
+  };
+}
+
 export function loadProgram(): ProgramSave | null {
   try {
     const raw = localStorage.getItem(PROGRAM_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as ProgramSave;
+    const parsed = JSON.parse(raw) as Partial<ProgramSave>;
+    if (!parsed.name || !parsed.startedOn) return null;
+    return defaults(parsed as ProgramSave);
   } catch {
     return null;
   }
@@ -102,10 +135,7 @@ export function applyMissedDays(state: ProgramSave, today: string): ProgramSave 
   };
 }
 
-export function completeDay(
-  state: ProgramSave,
-  entry: DayLog,
-): ProgramSave {
+export function completeDay(state: ProgramSave, entry: DayLog): ProgramSave {
   const today = entry.date;
   const consecutive = state.lastCompletedOn ? daysBetween(state.lastCompletedOn, today) === 1 : true;
   return {

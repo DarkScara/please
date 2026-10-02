@@ -1,3 +1,4 @@
+
 import { fill } from "@/data/program";
 import { sleepBody, type HouseRule, type SleepPlan } from "@/data/house";
 
@@ -47,5 +48,12 @@ ${opts.assignment ? `<section><p class="k">24h job</p><p>${escapeHtml(fill(opts.
 }
 
 function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&", "<": "<", ">": ">", '"': """, "'": "&#39;" })[c] ?? c);
+  const map: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  };
+  return s.replace(/[&<>"']/g, (c) => map[c] ?? c);
 }

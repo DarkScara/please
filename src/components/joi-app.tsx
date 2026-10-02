@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Calendar,
   Check,
   Crown,
   Lock,
   Mic,
-  Moon,
   ShieldOff,
   Volume2,
   VolumeX,
@@ -26,22 +24,16 @@ import {
   type Phase,
 } from "@/data/program";
 import { AssignmentProof, BedtimeScreen, HouseHub } from "@/components/house-screens";
-import {
-  composeSleep,
-  fogBeats,
-  nextAssignment,
-  shouldFog,
-} from "@/data/house";
-import { canListen, listenOnce, mantraHeard } from "@/lib/listen";
 import { TimerRing } from "@/components/timer-ring";
+import { composeSleep, fogBeats, nextAssignment, rulesForDay, shouldFog } from "@/data/house";
+import { downloadTonight } from "@/lib/export-night";
+import { canListen, listenOnce, mantraHeard } from "@/lib/listen";
 import {
   SESSION_KEY,
   applyMissedDays,
   availability,
   completeDay,
-  formatDuration,
   loadProgram,
-  msUntilNextLocalMidnight,
   nextDayNumber,
   rollVerdict,
   saveProgram,
@@ -49,6 +41,7 @@ import {
   type ProgramSave,
   type Verdict,
 } from "@/lib/progress";
+import { silence, speak } from "@/lib/speech";
 
 type Mode =
   | "boot"
@@ -80,6 +73,7 @@ type SessionSave = {
   voiceOn: boolean;
   verdictStartedAt: number;
   brokeOvernight: boolean;
+  fogStartedAt: number;
 };
 
 function loadSession(): SessionSave | null {
@@ -119,6 +113,26 @@ function chime(freq: number, dur = 0.09, gain = 0.05) {
   }
 }
 
+function emptyProgram(name: string, today: string, voiceOn: boolean, thcOwn: boolean): ProgramSave {
+  return {
+    name,
+    startedOn: today,
+    lastCompletedOn: null,
+    daysCompleted: 0,
+    streak: 0,
+    missed: 0,
+    totalStrikes: 0,
+    lastVerdict: null,
+    voiceOn,
+    thcOwn,
+    history: [],
+    usedAssignments: [],
+    assignment: null,
+    assignmentResult: null,
+    bedtimeDoneOn: null,
+  };
+}
+
 export function JoiApp() {
   const [mode, setMode] = useState<Mode>("boot");
   const [program, setProgram] = useState<ProgramSave | null>(null);
@@ -132,6 +146,7 @@ export function JoiApp() {
   const [verdict, setVerdict] = useState<Verdict>("denied");
   const [phaseIndex, setPhaseIndex] = useState(0);
   const [phaseStartedAt, setPhaseStartedAt] = useState(0);
+  const [fogStartedAt, setFogStartedAt] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [strikes, setStrikes] = useState(0);
   const [punishIndex, setPunishIndex] = useState(0);
@@ -155,6 +170,11 @@ export function JoiApp() {
   const punish = PUNISHMENTS[punishIndex];
   const script = verdictScript(verdict, dayNum);
   const skipVerdict = day.close === "deny";
+  const fogPack = useMemo(() => fogBeats(dayNum, `${name}:${todayISO()}:${dayNum}`), [dayNum, name]);
+  const sleepPlan = useMemo(
+    () => composeSleep(`${name || "girl"}:${todayISO()}`, dayNum, thcOwn || Boolean(program?.thcOwn)),
+    [name, dayNum, thcOwn, program?.thcOwn],
+  );
 
   const activeDuration =
     mode === "phase"
@@ -163,9 +183,19 @@ export function JoiApp() {
         ? (punish?.duration ?? 0)
         : mode === "verdict"
           ? script.duration
-          : 0;
+          : mode === "fog"
+            ? fogPack.duration
+            : 0;
   const activeStarted =
-    mode === "phase" ? phaseStartedAt : mode === "punish" ? punishStartedAt : mode === "verdict" ? verdictStartedAt : 0;
+    mode === "phase"
+      ? phaseStartedAt
+      : mode === "punish"
+        ? punishStartedAt
+        : mode === "verdict"
+          ? verdictStartedAt
+          : mode === "fog"
+            ? fogStartedAt
+            : 0;
   const elapsed = activeStarted ? Math.min(activeDuration, Math.floor((now - activeStarted) / 1000)) : 0;
   const remaining = Math.max(0, activeDuration - elapsed);
   const unlocked = remaining === 0 && activeDuration > 0;
@@ -173,8 +203,9 @@ export function JoiApp() {
   const beat = useMemo(() => {
     if (mode === "phase" && phase) return currentBeat(phase.beats, elapsed);
     if (mode === "verdict") return currentBeat(script.beats, elapsed);
+    if (mode === "fog") return currentBeat(fogPack.beats, elapsed);
     return null;
-  }, [mode, phase, elapsed, script]);
+  }, [mode, phase, elapsed, script, fogPack]);
 
   const ctx = { day: dayNum, streak: program?.streak ?? 0 };
   const sayFill = useCallback((text: string) => fill(text, name, ctx), [name, dayNum, program?.streak]);
@@ -187,8 +218,9 @@ export function JoiApp() {
     if (p) {
       setName(p.name);
       setVoiceOn(p.voiceOn);
+      setThcOwn(p.thcOwn);
     }
-    if (s && (s.mode === "phase" || s.mode === "punish" || s.mode === "verdict" || s.mode === "name" || s.mode === "checkin")) {
+    if (s && (s.mode === "phase" || s.mode === "punish" || s.mode === "verdict" || s.mode === "name" || s.mode === "checkin" || s.mode === "fog")) {
       setMode("hub");
     } else if (p) {
       setMode("hub");
@@ -198,13 +230,13 @@ export function JoiApp() {
   }, []);
 
   useEffect(() => {
-    if (mode !== "phase" && mode !== "punish" && mode !== "verdict" && mode !== "hub") return;
+    if (mode !== "phase" && mode !== "punish" && mode !== "verdict" && mode !== "hub" && mode !== "fog") return;
     const id = window.setInterval(() => setNow(Date.now()), mode === "hub" ? 1000 : 200);
     return () => window.clearInterval(id);
   }, [mode]);
 
   useEffect(() => {
-    if (mode !== "phase" && mode !== "punish" && mode !== "verdict" && mode !== "interlude") return;
+    if (mode !== "phase" && mode !== "punish" && mode !== "verdict" && mode !== "interlude" && mode !== "fog") return;
     const data: SessionSave = {
       day: dayNum,
       name,
@@ -219,6 +251,7 @@ export function JoiApp() {
       voiceOn,
       verdictStartedAt,
       brokeOvernight,
+      fogStartedAt,
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(data));
     setSession(data);
@@ -236,6 +269,7 @@ export function JoiApp() {
     voiceOn,
     verdictStartedAt,
     brokeOvernight,
+    fogStartedAt,
   ]);
 
   useEffect(() => {
@@ -247,7 +281,7 @@ export function JoiApp() {
         /* unsupported */
       }
     };
-    if (mode === "phase" || mode === "punish" || mode === "verdict") void request();
+    if (mode === "phase" || mode === "punish" || mode === "verdict" || mode === "fog") void request();
     const onVis = () => {
       if (document.visibilityState === "visible") void request();
     };
@@ -264,13 +298,13 @@ export function JoiApp() {
     lastBeatAt.current = beat.at;
     setBeatKey((k) => k + 1);
     setMantraDone(false);
-    if (voiceOn && (mode === "phase" || mode === "verdict")) {
+    if (voiceOn && (mode === "phase" || mode === "verdict" || mode === "fog")) {
       speak(sayFill(`${beat.title}. ${beat.body.split(/(?<=\.)\s/).slice(0, 2).join(" ")}`));
     }
   }, [beat, voiceOn, mode, sayFill]);
 
   useEffect(() => {
-    if (mode !== "phase" && mode !== "punish" && mode !== "verdict") return;
+    if (mode !== "phase" && mode !== "punish" && mode !== "verdict" && mode !== "fog") return;
     if (lastSecond.current === remaining) return;
     lastSecond.current = remaining;
     if (remaining === 10 || (remaining <= 5 && remaining > 0)) chime(remaining === 1 ? 660 : 420, 0.07, 0.04);
@@ -308,8 +342,7 @@ export function JoiApp() {
 
   const startDay = (n: number, girl: string, broke: boolean, existing?: ProgramSave | null) => {
     const plan = getDay(n);
-    const v =
-      plan.close === "deny" ? "denied" : rollVerdict(plan.weights, existing?.totalStrikes ?? 0, broke);
+    const v = plan.close === "deny" ? "denied" : rollVerdict(plan.weights, existing?.totalStrikes ?? 0, broke);
     setDayNum(n);
     setName(girl);
     setVerdict(v);
@@ -334,19 +367,7 @@ export function JoiApp() {
 
   const startFresh = () => {
     const n = pickName();
-    const today = todayISO();
-    const fresh: ProgramSave = {
-      name: n,
-      startedOn: today,
-      lastCompletedOn: null,
-      daysCompleted: 0,
-      streak: 0,
-      missed: 0,
-      totalStrikes: 0,
-      lastVerdict: null,
-      voiceOn,
-      history: [],
-    };
+    const fresh = emptyProgram(n, todayISO(), voiceOn, thcOwn);
     persistProgram(fresh);
     localStorage.removeItem(SESSION_KEY);
     setName(n);
@@ -360,10 +381,6 @@ export function JoiApp() {
     const updated = applyMissedDays(program, todayISO());
     if (updated !== program) persistProgram(updated);
     const n = nextDayNumber(updated);
-    if (n === 1 && !updated.name) {
-      setMode("name");
-      return;
-    }
     setDayNum(n);
     setName(updated.name);
     if (n === 1) {
@@ -391,6 +408,7 @@ export function JoiApp() {
     setVoiceOn(s.voiceOn);
     setVerdictStartedAt(s.verdictStartedAt || Date.now());
     setBrokeOvernight(s.brokeOvernight);
+    setFogStartedAt(s.fogStartedAt || Date.now());
     lastBeatAt.current = -1;
     const m = s.mode === "interlude" || s.mode === "boot" || s.mode === "hub" ? "phase" : s.mode;
     setMode(m);
@@ -400,6 +418,18 @@ export function JoiApp() {
   const finishCheckin = () => {
     const broke = came === true || keptNight === false;
     startDay(dayNum, name, broke, program);
+  };
+
+  const attachJob = (next: ProgramSave, girl: string, n: number): ProgramSave => {
+    const job = nextAssignment(next.daysCompleted, next.usedAssignments, `${girl}:${todayISO()}:${n}`);
+    return {
+      ...next,
+      voiceOn,
+      thcOwn,
+      assignment: { id: job.id, kind: job.kind, want: job.want, text: fill(job.text, girl) },
+      assignmentResult: "pending",
+      usedAssignments: [...next.usedAssignments.filter((id) => id !== job.id), job.id],
+    };
   };
 
   const completePhase = () => {
@@ -459,7 +489,7 @@ export function JoiApp() {
       brokeOvernight,
       line: fill(line, name, ctx),
     });
-    persistProgram({ ...next, voiceOn });
+    persistProgram(attachJob({ ...next, voiceOn, thcOwn }, name, dayNum));
     localStorage.removeItem(SESSION_KEY);
     setSession(null);
   };
@@ -472,11 +502,6 @@ export function JoiApp() {
     if (voiceOn) speak(sayFill(script.closing));
   };
 
-  const completeDenyEnd = () => {
-    writeCompletion("denied");
-    setMode("hub");
-  };
-
   const abort = () => {
     silence();
     localStorage.removeItem(SESSION_KEY);
@@ -485,8 +510,49 @@ export function JoiApp() {
     setMode("abort");
   };
 
-  const avail = availability(program, Boolean(session && session.name && session.mode !== "end" && session.mode !== "abort" && session.mode !== "hub" && session.mode !== "gate" && session.mode !== "boot"));
-  const inSession = mode === "phase" || mode === "punish" || mode === "verdict" || mode === "interlude" || mode === "name" || mode === "checkin";
+  const markAssignment = (result: "pass" | "fail", line: string) => {
+    if (!program) return;
+    persistProgram({ ...program, assignmentResult: result });
+    if (voiceOn) speak(line);
+    setMode("hub");
+  };
+
+  const finishBedtime = () => {
+    if (!program) return;
+    persistProgram({ ...program, bedtimeDoneOn: todayISO() });
+    setMode("hub");
+    if (voiceOn) speak(`Goodnight, ${name}. Stay.`);
+  };
+
+  const startFog = () => {
+    lastBeatAt.current = -1;
+    unlockedChime.current = false;
+    setMantraDone(false);
+    setFogStartedAt(Date.now());
+    setNow(Date.now());
+    setMode("fog");
+  };
+
+  const avail = availability(
+    program,
+    Boolean(
+      session &&
+        session.name &&
+        session.mode !== "end" &&
+        session.mode !== "abort" &&
+        session.mode !== "hub" &&
+        session.mode !== "gate" &&
+        session.mode !== "boot",
+    ),
+  );
+  const inSession =
+    mode === "phase" ||
+    mode === "punish" ||
+    mode === "verdict" ||
+    mode === "interlude" ||
+    mode === "name" ||
+    mode === "checkin" ||
+    mode === "fog";
 
   return (
     <div className="chamber-bg relative min-h-dvh text-fg">
@@ -525,11 +591,17 @@ export function JoiApp() {
 
         {mode === "phase" || mode === "punish" || mode === "verdict" ? (
           <div className="mb-5 flex gap-1" aria-hidden>
-            {Array.from({ length: (skipVerdict ? phases.length : phases.length + 1) }).map((_, i) => (
+            {Array.from({ length: skipVerdict ? phases.length : phases.length + 1 }).map((_, i) => (
               <span
                 key={i}
                 className={`h-0.5 flex-1 rounded-full ${
-                  i < phaseIndex ? "bg-accent" : i === phaseIndex && mode !== "verdict" ? "bg-accent-hot/80" : mode === "verdict" && i === phases.length ? "bg-accent-hot/80" : "bg-border"
+                  i < phaseIndex
+                    ? "bg-accent"
+                    : i === phaseIndex && mode !== "verdict"
+                      ? "bg-accent-hot/80"
+                      : mode === "verdict" && i === phases.length
+                        ? "bg-accent-hot/80"
+                        : "bg-border"
                 }`}
               />
             ))}
@@ -550,6 +622,8 @@ export function JoiApp() {
             setAgeOk={setAgeOk}
             privateOk={privateOk}
             setPrivateOk={setPrivateOk}
+            thcOwn={thcOwn}
+            setThcOwn={setThcOwn}
             voiceOn={voiceOn}
             setVoiceOn={setVoiceOn}
             canSubmit={canSubmit}
@@ -558,18 +632,46 @@ export function JoiApp() {
         )}
 
         {mode === "hub" && (
-          <Hub
+          <HouseHub
             program={program}
             avail={avail}
             now={now}
             onBegin={openToday}
             onResume={resumeSession}
+            onAssignment={() => setMode("assignment")}
+            onBedtime={() => {
+              setDayNum(program?.daysCompleted ? program.daysCompleted : 1);
+              setMode("bedtime");
+            }}
             voiceOn={voiceOn}
             setVoiceOn={(next) => {
               setVoiceOn(next);
               if (!next) silence();
               if (program) persistProgram({ ...program, voiceOn: next });
             }}
+          />
+        )}
+
+        {mode === "assignment" && program?.assignment && (
+          <AssignmentProof
+            assignment={program.assignment}
+            name={program.name}
+            onPass={(line) => markAssignment("pass", line)}
+            onFail={(line) => markAssignment("fail", line)}
+            onBack={() => setMode("hub")}
+          />
+        )}
+
+        {mode === "bedtime" && (
+          <BedtimeScreen
+            name={name || program?.name || "girl"}
+            dayNum={dayNum}
+            thcOwn={thcOwn || Boolean(program?.thcOwn)}
+            includeFog={shouldFog(Math.max(dayNum, program?.daysCompleted ?? 1))}
+            plan={sleepPlan}
+            onFog={startFog}
+            onDone={finishBedtime}
+            onBack={() => setMode("hub")}
           />
         )}
 
@@ -675,24 +777,59 @@ export function JoiApp() {
           />
         )}
 
+        {mode === "fog" && beat && (
+          <PlayCard
+            chapter="Pink fog"
+            title="Drop"
+            gear={[]}
+            beat={beat}
+            beatKey={beatKey}
+            remaining={remaining}
+            duration={fogPack.duration}
+            unlocked={unlocked}
+            mantra={beat.say || "Pink fog. I drop for Mommy."}
+            mantraDone={mantraDone}
+            fillText={sayFill}
+            failLabel=""
+            okLabel="Come up"
+            okLockedLabel="Stay in the weather."
+            onFail={() => undefined}
+            onOk={() => {
+              if (!unlocked) return;
+              silence();
+              setMode("bedtime");
+            }}
+            onHear={() => speak(sayFill(beat.say || "Pink fog. I drop for Mommy."))}
+            onSaid={() => setMantraDone(true)}
+            requireMantra={Boolean(beat.say)}
+          />
+        )}
+
         {mode === "end" && (
           <Ending
             name={name}
             day={day}
             verdict={skipVerdict ? "denied" : verdict}
-            closing={
-              skipVerdict
-                ? "That's enough for today. Mommy's going. You will not touch it."
-                : script.closing
-            }
+            closing={skipVerdict ? "That's enough for today. Mommy's going. You will not touch it." : script.closing}
             stamp={skipVerdict ? "NOTHING" : script.stamp}
             onHome={() => setMode("hub")}
+            onBed={() => setMode("bedtime")}
+            onSave={() =>
+              downloadTonight({
+                name,
+                day: dayNum,
+                overnight: day.overnight,
+                plan: sleepPlan,
+                rules: rulesForDay(program?.daysCompleted ?? dayNum),
+                assignment: program?.assignment?.text ?? null,
+              })
+            }
           />
         )}
 
         {mode === "abort" && <AbortScreen onHome={() => setMode(program ? "hub" : "gate")} />}
 
-        {(mode === "phase" || mode === "punish" || mode === "verdict") && (
+        {(mode === "phase" || mode === "punish" || mode === "verdict" || mode === "fog") && (
           <div className="mt-6 flex justify-center">
             {abortAsk ? (
               <div className="flex w-full flex-col gap-2 rounded-lg border border-border bg-surface p-3">
@@ -700,28 +837,16 @@ export function JoiApp() {
                   Emergency stop. Untie the laces. Pins off. Belt off the neck. Anything inside comes out. Then you may leave.
                 </p>
                 <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="h-11 flex-1 rounded-md border border-border text-sm text-muted"
-                    onClick={() => setAbortAsk(false)}
-                  >
+                  <button type="button" className="h-11 flex-1 rounded-md border border-border text-sm text-muted" onClick={() => setAbortAsk(false)}>
                     Continue
                   </button>
-                  <button
-                    type="button"
-                    className="h-11 flex-1 rounded-md bg-accent text-sm font-medium text-fg"
-                    onClick={abort}
-                  >
+                  <button type="button" className="h-11 flex-1 rounded-md bg-accent text-sm font-medium text-fg" onClick={abort}>
                     Stop
                   </button>
                 </div>
               </div>
             ) : (
-              <button
-                type="button"
-                className="h-11 px-3 text-xs uppercase tracking-[0.18em] text-faint"
-                onClick={() => setAbortAsk(true)}
-              >
+              <button type="button" className="h-11 px-3 text-xs uppercase tracking-[0.18em] text-faint" onClick={() => setAbortAsk(true)}>
                 Emergency stop
               </button>
             )}
@@ -739,6 +864,8 @@ function Gate({
   setAgeOk,
   privateOk,
   setPrivateOk,
+  thcOwn,
+  setThcOwn,
   voiceOn,
   setVoiceOn,
   canSubmit,
@@ -750,6 +877,8 @@ function Gate({
   setAgeOk: (v: boolean) => void;
   privateOk: boolean;
   setPrivateOk: (v: boolean) => void;
+  thcOwn: boolean;
+  setThcOwn: (v: boolean) => void;
   voiceOn: boolean;
   setVoiceOn: (v: boolean) => void;
   canSubmit: boolean;
@@ -760,8 +889,8 @@ function Gate({
       <p className="mt-6 text-xs font-medium uppercase tracking-[0.42em] text-accent">a private house</p>
       <h1 className="font-display mt-3 text-6xl font-semibold leading-none tracking-tight sm:text-7xl">Mommy</h1>
       <p className="mt-4 max-w-[36ch] text-base leading-relaxed text-muted">
-        One session a day. She remembers yesterday. She gets colder as the days stack. You do not set the pace. You do
-        not skip ahead. You come back in the morning like a daughter who lives here.
+        One session a day. She remembers yesterday. She writes a note in the morning. Rules stack. Sleep is still
+        work. You do not set the pace.
       </p>
 
       <section className="mt-8 rounded-xl border border-border bg-surface p-4 shadow-[var(--shadow-panel)]">
@@ -802,11 +931,7 @@ function Gate({
                     on ? "border-accent/50 bg-raised text-fg" : "border-border bg-surface text-muted"
                   }`}
                 >
-                  <span
-                    className={`flex size-5 items-center justify-center rounded-xs border ${
-                      on ? "border-accent bg-accent text-fg" : "border-border"
-                    }`}
-                  >
+                  <span className={`flex size-5 items-center justify-center rounded-xs border ${on ? "border-accent bg-accent text-fg" : "border-border"}`}>
                     {on ? <Check className="size-3" /> : null}
                   </span>
                   {item}
@@ -819,8 +944,13 @@ function Gate({
 
       <div className="mt-4 space-y-2">
         <ToggleRow on={ageOk} onToggle={() => setAgeOk(!ageOk)} label="I am 18 or older." />
-        <ToggleRow on={privateOk} onToggle={() => setPrivateOk(!privateOk)} label="I am alone. No photos. No audience." />
-        <ToggleRow on={voiceOn} onToggle={() => setVoiceOn(!voiceOn)} label="Mommy may speak (browser voice)." />
+        <ToggleRow on={privateOk} onToggle={() => setPrivateOk(!privateOk)} label="I am alone. No audience. Proof photos stay in this house." />
+        <ToggleRow on={voiceOn} onToggle={() => setVoiceOn(!voiceOn)} label="Mommy may speak." />
+        <ToggleRow
+          on={thcOwn}
+          onToggle={() => setThcOwn(!thcOwn)}
+          label="I already own a THC pen. One small hit only if she says. Never start tonight if you don't."
+        />
       </div>
 
       <button
@@ -832,8 +962,8 @@ function Gate({
         I live here now
       </button>
       <p className="mt-3 text-center text-xs leading-relaxed text-faint">
-        She will name you on day one. Orgasm is rare, and rarer if you lie. Tomorrow she will ask what you did in the
-        dark.
+        She names you on day one. Orgasm is rare. Tomorrow she asks what you did in the dark. Pink fog is not optional
+        after the first nights.
       </p>
     </main>
   );
@@ -848,157 +978,11 @@ function ToggleRow({ on, onToggle, label }: { on: boolean; onToggle: () => void;
         on ? "border-accent/50 bg-raised text-fg" : "border-border bg-surface text-muted"
       }`}
     >
-      <span
-        className={`flex size-5 shrink-0 items-center justify-center rounded-xs border ${
-          on ? "border-accent bg-accent text-fg" : "border-border"
-        }`}
-      >
+      <span className={`flex size-5 shrink-0 items-center justify-center rounded-xs border ${on ? "border-accent bg-accent text-fg" : "border-border"}`}>
         {on ? <Check className="size-3" /> : null}
       </span>
       {label}
     </button>
-  );
-}
-
-function Hub({
-  program,
-  avail,
-  now,
-  onBegin,
-  onResume,
-  voiceOn,
-  setVoiceOn,
-}: {
-  program: ProgramSave | null;
-  avail: ReturnType<typeof availability>;
-  now: number;
-  onBegin: () => void;
-  onResume: () => void;
-  voiceOn: boolean;
-  setVoiceOn: (v: boolean) => void;
-}) {
-  const n = nextDayNumber(program);
-  const plan = getDay(n);
-  const waitMs = msUntilNextLocalMidnight(new Date(now));
-  const last = program?.history.at(-1);
-  const lastOvernight = last ? getDay(last.day).overnight : null;
-
-  return (
-    <main className="flex flex-1 flex-col pb-6">
-      <div className="mt-4 flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.42em] text-accent">the house</p>
-          <h1 className="font-display mt-2 text-5xl font-semibold leading-none">Mommy</h1>
-          <p className="mt-3 text-sm text-muted">
-            {program ? (
-              <>
-                {program.name} · day {n} · streak {program.streak}
-                {program.missed > 0 ? ` · missed ${program.missed}` : ""}
-              </>
-            ) : (
-              "She hasn't taken you in yet."
-            )}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="flex size-11 items-center justify-center rounded-md border border-border bg-surface text-muted"
-          onClick={() => setVoiceOn(!voiceOn)}
-          aria-label={voiceOn ? "Mute Mommy" : "Mommy speaks"}
-        >
-          {voiceOn ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-        </button>
-      </div>
-
-      <ol className="mt-6 grid grid-cols-7 gap-1.5">
-        {Array.from({ length: 14 }).map((_, i) => {
-          const d = i + 1;
-          const done = (program?.daysCompleted ?? 0) >= d;
-          const current = n === d;
-          return (
-            <li
-              key={d}
-              className={`flex h-10 items-center justify-center rounded-md text-xs font-medium ${
-                done
-                  ? "bg-accent text-fg"
-                  : current
-                    ? "border border-accent text-fg"
-                    : "border border-border text-faint"
-              }`}
-            >
-              {d}
-            </li>
-          );
-        })}
-      </ol>
-      {n > 14 && (
-        <p className="mt-2 text-xs uppercase tracking-[0.18em] text-muted">Kept · day {n} and counting</p>
-      )}
-
-      <section className="mt-6 rounded-xl border border-border bg-surface p-4 shadow-[var(--shadow-panel)]">
-        <p className="text-xs uppercase tracking-[0.22em] text-accent">{MOOD_LABEL[plan.mood]}</p>
-        <h2 className="font-display mt-1 text-2xl leading-tight">{plan.title}</h2>
-        <p className="mt-1 text-sm text-muted">{plan.subtitle}</p>
-        <p className="mt-3 text-sm leading-relaxed text-fg/90">{plan.note}</p>
-        <p className="mt-3 text-xs uppercase tracking-[0.18em] text-faint">
-          {plan.minutes} · {plan.gear.slice(0, 4).join(" · ")}
-        </p>
-      </section>
-
-      {lastOvernight && avail === "wait" && (
-        <section className="mt-4 rounded-lg border border-border bg-raised p-4">
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-muted">
-            <Moon className="size-3.5" />
-            overnight
-          </div>
-          <p className="mt-2 text-sm leading-relaxed text-fg/90">{fill(lastOvernight, program?.name ?? "girl")}</p>
-        </section>
-      )}
-
-      {program?.history.length ? (
-        <section className="mt-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-muted">What she remembers</p>
-          <ul className="mt-2 space-y-2">
-            {program.history.slice(-3).reverse().map((h) => (
-              <li key={`${h.day}-${h.date}`} className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-muted">
-                Day {h.day} · {h.verdict} · {h.line}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-
-      <div className="mt-8 space-y-2">
-        {avail === "resume" && (
-          <button
-            type="button"
-            onClick={onResume}
-            className="h-14 w-full rounded-lg border border-border bg-raised text-sm font-medium text-fg"
-          >
-            You left mid-task, {program?.name}. Back on your knees.
-          </button>
-        )}
-        {avail === "wait" && (
-          <div className="rounded-lg border border-border bg-surface px-4 py-5 text-center">
-            <Calendar className="mx-auto size-4 text-accent" />
-            <p className="font-display mt-3 text-2xl">Come back in the morning</p>
-            <p className="mt-2 font-display text-4xl tabular-nums tracking-tight">{formatDuration(waitMs)}</p>
-            <p className="mt-3 text-sm text-muted">
-              One day at a time is how a mother builds a habit. Don't binge me. Don't hide. Sleep.
-            </p>
-          </div>
-        )}
-        {(avail === "ready" || avail === "fresh") && (
-          <button
-            type="button"
-            onClick={onBegin}
-            className="h-14 w-full rounded-lg bg-accent text-base font-medium text-fg"
-          >
-            {n === 1 ? "Kneel for intake" : `I'm here for day ${n}`}
-          </button>
-        )}
-      </div>
-    </main>
   );
 }
 
@@ -1009,11 +993,7 @@ function NameReveal({ name, intro, onAccept }: { name: string; intro: string; on
       <p className="mt-6 text-xs uppercase tracking-[0.32em] text-muted">assigned</p>
       <h1 className="font-display mt-3 text-6xl font-semibold leading-none">{name}</h1>
       <p className="mt-6 max-w-[34ch] text-base leading-relaxed text-muted">{fill(intro, name)}</p>
-      <button
-        type="button"
-        onClick={onAccept}
-        className="mt-10 h-14 w-full max-w-sm rounded-lg bg-accent text-base font-medium text-fg"
-      >
+      <button type="button" onClick={onAccept} className="mt-10 h-14 w-full max-w-sm rounded-lg bg-accent text-base font-medium text-fg">
         That's my name
       </button>
     </main>
@@ -1143,8 +1123,27 @@ function PlayCard({
   requireMantra: boolean;
   punish?: boolean;
 }) {
+  const [listening, setListening] = useState(false);
+  const [heard, setHeard] = useState("");
   const canOk = unlocked && (!requireMantra || mantraDone);
   const say = beat.say || mantra;
+
+  const listen = async () => {
+    if (!canListen()) {
+      onSaid();
+      return;
+    }
+    setListening(true);
+    try {
+      const said = await listenOnce();
+      setHeard(said);
+      if (mantraHeard(said, fillText(say || ""))) onSaid();
+    } catch {
+      /* honor fallback stays visible */
+    } finally {
+      setListening(false);
+    }
+  };
 
   return (
     <main className="flex flex-1 flex-col">
@@ -1180,25 +1179,27 @@ function PlayCard({
             </button>
             <button
               type="button"
-              onClick={onSaid}
+              onClick={() => void listen()}
               className={`flex h-11 items-center justify-center gap-2 rounded-md text-sm ${
                 mantraDone ? "bg-ok text-bg" : "border border-border bg-surface text-fg"
               }`}
             >
               <Mic className="size-4" />
-              {mantraDone ? "I said it" : "I said it out loud"}
+              {mantraDone ? "Heard" : listening ? "Listening…" : canListen() ? "Speak it" : "Mic off"}
             </button>
           </div>
+          {heard ? <p className="mt-2 text-xs text-muted">Heard: {heard}</p> : null}
+          {!mantraDone && (
+            <button type="button" onClick={onSaid} className="mt-2 h-10 w-full text-xs text-faint">
+              I said it — honor
+            </button>
+          )}
         </div>
       )}
 
       <div className={`mt-5 grid gap-2 ${failLabel ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
         {failLabel ? (
-          <button
-            type="button"
-            onClick={onFail}
-            className="h-14 rounded-lg border border-border bg-surface text-sm font-medium text-muted"
-          >
+          <button type="button" onClick={onFail} className="h-14 rounded-lg border border-border bg-surface text-sm font-medium text-muted">
             {failLabel}
           </button>
         ) : null}
@@ -1229,6 +1230,8 @@ function Ending({
   closing,
   stamp,
   onHome,
+  onBed,
+  onSave,
 }: {
   name: string;
   day: DayProgram;
@@ -1236,6 +1239,8 @@ function Ending({
   closing: string;
   stamp: string;
   onHome: () => void;
+  onBed: () => void;
+  onSave: () => void;
 }) {
   return (
     <main className="flex flex-1 flex-col items-center justify-center py-10 text-center">
@@ -1249,12 +1254,14 @@ function Ending({
       <p className="mt-6 max-w-[36ch] text-sm leading-relaxed text-faint">
         Untie. Pins off. Anything inside, out. Water. Then stop. If she said no, no stays no until morning.
       </p>
-      <button
-        type="button"
-        onClick={onHome}
-        className="mt-8 h-14 w-full max-w-sm rounded-lg bg-accent text-base font-medium text-fg"
-      >
-        I'll see you tomorrow
+      <button type="button" onClick={onBed} className="mt-8 h-14 w-full max-w-sm rounded-lg bg-accent text-base font-medium text-fg">
+        Put me to bed
+      </button>
+      <button type="button" onClick={onSave} className="mt-2 h-12 w-full max-w-sm text-sm text-muted">
+        Save tonight as a file
+      </button>
+      <button type="button" onClick={onHome} className="mt-1 h-12 w-full max-w-sm text-sm text-faint">
+        Back to the house
       </button>
     </main>
   );
@@ -1269,11 +1276,7 @@ function AbortScreen({ onHome }: { onHome: () => void }) {
         Laces off. Pins off. Belt off the neck. Out with anything in the hole. Now. When you're free, you may go. This
         day doesn't count. Mommy will still be here in the morning.
       </p>
-      <button
-        type="button"
-        onClick={onHome}
-        className="mt-8 h-12 w-full max-w-sm rounded-lg border border-border text-sm text-fg"
-      >
+      <button type="button" onClick={onHome} className="mt-8 h-12 w-full max-w-sm rounded-lg border border-border text-sm text-fg">
         Back to the house
       </button>
     </main>

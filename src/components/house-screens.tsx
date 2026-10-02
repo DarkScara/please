@@ -1,15 +1,18 @@
+import { Camera, Check, Mic, Moon, Volume2, VolumeX } from "lucide-react";
 import { useRef, useState } from "react";
-import { Camera, Check, Mic, Moon, Volume2 } from "lucide-react";
 import {
   composeLetter,
+  composeSleep,
   liveMood,
   rulesForDay,
   sleepBody,
   type SleepPlan,
 } from "@/data/house";
 import { fill, getDay, MOOD_LABEL } from "@/data/program";
+import { downloadTonight } from "@/lib/export-night";
 import { inspectProof } from "@/lib/inspect-photo";
 import { canListen, listenOnce, mantraHeard } from "@/lib/listen";
+import { playMommyVoice } from "@/lib/mommy-voice";
 import {
   formatDuration,
   msUntilNextLocalMidnight,
@@ -19,7 +22,6 @@ import {
   type ProgramSave,
   type SavedAssignment,
 } from "@/lib/progress";
-import { speak } from "@/lib/speech";
 
 async function shrinkImage(file: File) {
   const bitmap = await createImageBitmap(file);
@@ -59,8 +61,10 @@ export function HouseHub({
   const mood = liveMood(program, plan.mood);
   const waitMs = msUntilNextLocalMidnight(new Date(now));
   const last = program?.history.at(-1);
-  const lastOvernight = last ? getDay(last.day).overnight : null;
-  const letter = program ? fill(composeLetter(program, n, todayISO()), program.name, { day: n, streak: program.streak }) : "";
+  const lastOvernight = last ? getDay(last.day).overnight : program ? getDay(1).overnight : null;
+  const letter = program
+    ? fill(composeLetter(program, n, todayISO()), program.name, { day: n, streak: program.streak })
+    : "";
   const rules = rulesForDay(program?.daysCompleted ?? 0);
   const bedtimeDone = program?.bedtimeDoneOn === todayISO();
   const jobOpen = Boolean(program?.assignment && program.assignmentResult !== "pass");
@@ -88,7 +92,7 @@ export function HouseHub({
           onClick={() => setVoiceOn(!voiceOn)}
           aria-label={voiceOn ? "Mute Mommy" : "Mommy speaks"}
         >
-          <Volume2 className="size-4" />
+          {voiceOn ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
         </button>
       </div>
 
@@ -109,16 +113,13 @@ export function HouseHub({
           );
         })}
       </ol>
+      {n > 14 && <p className="mt-2 text-xs uppercase tracking-[0.18em] text-muted">Kept · day {n} and counting</p>}
 
       {letter ? (
         <section className="mt-6 rounded-xl border border-border bg-surface p-4 shadow-[var(--shadow-panel)]">
           <p className="text-xs uppercase tracking-[0.22em] text-accent">morning note · {MOOD_LABEL[mood]}</p>
           <p className="font-display mt-3 text-xl leading-snug italic">{letter}</p>
-          <button
-            type="button"
-            className="mt-3 h-11 text-sm text-muted"
-            onClick={() => speak(letter)}
-          >
+          <button type="button" className="mt-3 h-11 text-sm text-muted" onClick={() => void playMommyVoice(letter)}>
             Read it to me
           </button>
         </section>
@@ -214,6 +215,25 @@ export function HouseHub({
             Put me to bed
           </button>
         )}
+        {program && (
+          <button
+            type="button"
+            className="h-12 w-full text-sm text-faint"
+            onClick={() => {
+              const sleep = composeSleep(`${program.name}:${todayISO()}`, n, program.thcOwn);
+              downloadTonight({
+                name: program.name,
+                day: n,
+                overnight: lastOvernight ?? plan.overnight,
+                plan: sleep,
+                rules,
+                assignment: program.assignment?.text ?? null,
+              });
+            }}
+          >
+            Save tonight as a file
+          </button>
+        )}
       </div>
     </main>
   );
@@ -280,7 +300,7 @@ export function AssignmentProof({
       <p className="text-xs uppercase tracking-[0.22em] text-accent">proof</p>
       <h2 className="font-display mt-2 text-3xl leading-tight">Show me</h2>
       <p className="mt-3 text-base leading-relaxed text-muted">{text}</p>
-      <p className="mt-2 text-xs text-faint">Private. Not posted. Face optional. Nothing leaves this house.</p>
+      <p className="mt-2 text-xs text-faint">Private. Not posted. Face optional. Nothing leaves this house except this inspection.</p>
 
       {assignment.kind === "photo" && (
         <>
@@ -331,6 +351,9 @@ export function AssignmentProof({
             {busy ? "Listening…" : canListen() ? "Speak it" : "Mic not available"}
           </button>
           {heard ? <p className="mt-3 text-sm text-muted">Heard: {heard}</p> : null}
+          <button type="button" onClick={() => onPass("Honor. You said you spoke it.")} className="mt-2 h-11 text-sm text-faint">
+            Mic failed — I said it
+          </button>
         </>
       )}
 
@@ -375,6 +398,7 @@ export function BedtimeScreen({
 }) {
   const [said, setSaid] = useState(false);
   const [listening, setListening] = useState(false);
+  const [heard, setHeard] = useState("");
   const mantra = fill(plan.mantra, name);
   const body = fill(sleepBody(plan), name);
 
@@ -390,7 +414,7 @@ export function BedtimeScreen({
       )}
       <p className="font-display mt-6 text-2xl italic">{mantra}</p>
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <button type="button" onClick={() => speak(mantra)} className="h-12 rounded-md border border-border bg-surface text-sm">
+        <button type="button" onClick={() => void playMommyVoice(mantra)} className="h-12 rounded-md border border-border bg-surface text-sm">
           Hear it
         </button>
         <button
@@ -404,7 +428,8 @@ export function BedtimeScreen({
             setListening(true);
             try {
               const h = await listenOnce();
-              setSaid(mantraHeard(h, mantra) || h.length > 6);
+              setHeard(h);
+              setSaid(mantraHeard(h, mantra) || h.length > 8);
             } catch {
               setSaid(true);
             } finally {
@@ -417,6 +442,7 @@ export function BedtimeScreen({
           {said ? "Heard" : listening ? "…" : "Say it"}
         </button>
       </div>
+      {heard ? <p className="mt-2 text-xs text-muted">Heard: {heard}</p> : null}
       {includeFog && (
         <button type="button" onClick={onFog} className="mt-6 h-14 w-full rounded-lg border border-accent/50 bg-raised text-sm font-medium text-fg">
           Pink fog first

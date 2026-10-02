@@ -78,7 +78,7 @@ export const HARD_LIMITS = [
   "No bruises that last",
   "No vomiting",
   "No piss / shit / toilet play",
-  "No public play, photos, or recordings",
+  "No public play. Proof photos stay in this house — never posted, never sent.",
 ];
 
 export function fill(text: string, name: string, extra?: { day?: number; streak?: number }) {
@@ -641,7 +641,7 @@ export const DAYS: DayProgram[] = [
     title: "One week",
     subtitle: "She is proud. That is a trap.",
     mood: "pleased",
-    minutes: "20 min",
+    minutes: "20 min + pink fog",
     note: "Anniversary voice. Pets, praise, and the first real lottery — she still usually says no.",
     overnight: "You are one week old as {name}. No secret orgasm in the afterglow. If you got to come, that was the gift. If you didn't, that was the gift.",
     gear: ["Belt", "Lace leash", "Spoon", "Worn sock", "Dress", "Shoes", "Mirror"],
@@ -1067,7 +1067,7 @@ export const DAYS: DayProgram[] = [
     title: "Kept",
     subtitle: "You're not visiting Mommy. You live here.",
     mood: "owning",
-    minutes: "22 min",
+    minutes: "22 min + hour fog",
     note: "Full voice. Owner. The lottery is real, and so is the rest of your life after it.",
     overnight: "Whatever I decided, that's the law. No second try in the shower. You may take the letters off tomorrow if you must. I'd rather you didn't.",
     gear: ["Full kit"],
